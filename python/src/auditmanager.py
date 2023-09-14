@@ -1,44 +1,64 @@
+import dataclasses
 import datetime
-from abc import ABC, abstractmethod
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import List
 
 
-class IFileSystem(ABC):
-    @abstractmethod
-    def get_files(self) -> List[Path]:
-        pass
+@dataclasses.dataclass(frozen=True)
+class FileUpdate:
+    name: PurePath
+    new_content: str
 
-    @abstractmethod
-    def write_all_text(self, path: Path, content: str) -> None:
-        pass
 
-    @abstractmethod
-    def read_all_lines(self, path: Path) -> List[str]:
-        pass
+@dataclasses.dataclass(frozen=True)
+class FileContent:
+    name: PurePath
+    content: List[str]
+
+
+def read_directory(path: Path) -> List[FileContent]:
+    contents = []
+    for file in path.iterdir():
+        with file.open("w") as f:
+            contents.append(FileContent(file.name, list(f.readlines())))
+    contents.sort(key=lambda x: x.name)
+    return contents
+
+
+def apply_update(path: Path, update: FileUpdate) -> None:
+    file_name = path / update.name
+    with file_name.open("w") as f:
+        f.write(update)
 
 
 class AuditManager:
-    def __init__(
-        self, max_entries_per_file: int, directory_name: Path, file_system: IFileSystem
-    ):
+    def __init__(self, max_entries_per_file: int):
         self._max_entries_per_file = max_entries_per_file
-        self._directory_name = directory_name
-        self._file_system = file_system
 
-    def add_record(self, visitor: str, time: datetime.datetime) -> None:
-        paths = self._file_system.get_files()
+    def add_record(
+        self, files: List[FileContent], visitor: str, time: datetime.datetime
+    ) -> FileUpdate:
         new_record = f"{visitor};{time.isoformat()}"
-        if len(paths) == 0:
-            file_name = self._directory_name / "audit_1.txt"
-            self._file_system.write_all_text(file_name, new_record)
-            return
+        if len(files) == 0:
+            file_name = PurePath("audit_1.txt")
+            return FileUpdate(file_name, new_record)
 
-        current_file = paths[-1]
-        lines = self._file_system.read_all_lines(current_file)
+        current_file = files[-1].name
+        lines = files[-1].content
         if len(lines) < self._max_entries_per_file:
             lines.append(new_record)
-            self._file_system.write_all_text(current_file, "\n".join(lines))
+            return FileUpdate(current_file, "\n".join(lines))
         else:
-            file_name = self._directory_name / f"audit_{len(paths)+1}.txt"
-            self._file_system.write_all_text(file_name, new_record)
+            file_name = PurePath(f"audit_{len(files)+1}.txt")
+            return FileUpdate(file_name, new_record)
+
+
+class AddRecordUseCase:
+    def __init__(self, path: Path, max_entries_per_file: int):
+        self._path = path
+        self._audit_manager = AuditManager(max_entries_per_file)
+
+    def add_record(self, name: str, time_of_visit: datetime.datetime):
+        files = read_directory(self._path)
+        update = self._audit_manager.add_record(files, visitor=name, time=time_of_visit)
+        apply_update(self._path, update)
